@@ -1,7 +1,7 @@
-from .query2insights import QueryToInsightsAgent
-from .RAG import RAGAgent
+from .query2insights import Query2Insight
+from .RAG import RAG
 
 __all__ = [
-    "QueryToInsightsAgent",
-    "RAGAgent"
+    "Query2Insight",
+    "RAG"
 ]

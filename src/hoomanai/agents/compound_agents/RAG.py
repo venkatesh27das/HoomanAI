@@ -4,6 +4,7 @@ from hoomanai.core.memory import MemoryManager
 from hoomanai.agents.mini_agents.retriever_agent import RetrieverAgent
 from hoomanai.agents.mini_agents.qna import QnAAgent
 from hoomanai.tools.llm.config import LLMConfig
+from hoomanai.core.types import Task
 
 class RAG(CompoundAgent):
     """

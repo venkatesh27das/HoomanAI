@@ -6,9 +6,19 @@ import redis
 from hoomanai.core.types import MemoryItem, MemoryType
 
 class RedisStorage:
-    def __init__(self, host='localhost', port=6379, db=0, **kwargs):
-        self.redis_client = redis.Redis(host=host, port=port, db=db, **kwargs)
-        self.key_prefix = "memory:"
+    def __init__(self, host='localhost', port=6379, db=0, prefix="memory:", **kwargs):
+        # Separate prefix from Redis connection parameters
+        self.key_prefix = prefix
+        # Only pass Redis-specific parameters to Redis client
+        redis_kwargs = {k: v for k, v in kwargs.items() 
+                       if k in ['password', 'socket_timeout', 'socket_connect_timeout', 
+                              'socket_keepalive', 'socket_keepalive_options', 
+                              'connection_pool', 'unix_socket_path', 'encoding', 
+                              'encoding_errors', 'charset', 'errors', 'decode_responses', 
+                              'retry_on_timeout', 'ssl', 'ssl_keyfile', 'ssl_certfile', 
+                              'ssl_cert_reqs', 'ssl_ca_certs', 'max_connections']}
+        
+        self.redis_client = redis.Redis(host=host, port=port, db=db, **redis_kwargs)
         
     def _serialize_memory_item(self, item: MemoryItem) -> str:
         """Serialize MemoryItem to JSON string."""
@@ -63,7 +73,7 @@ class RedisStorage:
         """Retrieve a memory item by ID."""
         key = f"{self.key_prefix}{str(memory_id)}"
         data = self.redis_client.get(key)
-        return self._deserialize_memory_item(data) if data else None
+        return self._deserialize_memory_item(data.decode()) if data else None
         
     def get_all(self, memory_type: Optional[MemoryType] = None) -> List[MemoryItem]:
         """Retrieve all memory items, optionally filtered by type."""
@@ -71,14 +81,20 @@ class RedisStorage:
             type_key = f"{self.key_prefix}type:{memory_type.value}"
             memory_ids = self.redis_client.smembers(type_key)
         else:
-            memory_ids = self.redis_client.keys(f"{self.key_prefix}*")
+            pattern = f"{self.key_prefix}*"
+            memory_ids = [key.replace(self.key_prefix.encode(), b'') 
+                         for key in self.redis_client.keys(pattern)
+                         if not key.decode().startswith(f"{self.key_prefix}type:")]
             
         memories = []
         for mid in memory_ids:
-            memory_id = str(mid.decode()).replace(self.key_prefix, '')
-            memory = self.get(UUID(memory_id))
-            if memory:
-                memories.append(memory)
+            try:
+                memory_id = str(mid.decode())
+                memory = self.get(UUID(memory_id))
+                if memory:
+                    memories.append(memory)
+            except (ValueError, AttributeError):
+                continue
                 
         return memories
         
@@ -107,4 +123,7 @@ class RedisStorage:
                 self.delete(UUID(mid.decode()))
             self.redis_client.delete(type_key)
         else:
-            self.redis_client.flushdb()
+            pattern = f"{self.key_prefix}*"
+            keys = self.redis_client.keys(pattern)
+            if keys:
+                self.redis_client.delete(*keys)

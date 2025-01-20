@@ -1,52 +1,83 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional
-from datetime import datetime
+from typing import Dict, Any, List
+from dataclasses import dataclass
 from uuid import UUID
+from datetime import datetime
 
-from .types import Task, TaskStatus
+from hoomanai.core.types import Task
+from hoomanai.tools.llm.client import LLMClient
+from hoomanai.tools.llm.config import LLMConfig
+from hoomanai.tools.llm.exceptions import LLMConnectionError, LLMResponseError
 
 class MiniAgent(ABC):
-    """
-    Abstract base class for mini agents that perform specific tasks.
-    Mini agents are the basic building blocks that handle single, focused tasks
-    like summarization, QA, or SQL generation.
-    """
+    """Base class for all mini agents in the system."""
     
-    def __init__(self):
-        """Initialize the mini agent with any required configurations."""
-        pass
-        
+    def __init__(self, name: str, description: str = "", llm_config: LLMConfig = None):
+        self.name = name
+        self.description = description
+        self.llm_client = LLMClient(config=llm_config) if llm_config else None
+        self.capabilities = self._init_capabilities()
+
     @abstractmethod
     def execute(self, task: Task) -> Dict[str, Any]:
-        """
-        Execute the specific task assigned to this mini agent.
+        """Execute the agent's primary task.
         
         Args:
-            task: Task object containing the task details, context, and execution parameters
-                 
-        Returns:
-            Dictionary containing the task results and any relevant metadata
+            task (Task): Task object containing execution context and requirements
             
-        Raises:
-            NotImplementedError: If the child class doesn't implement this method
-            ValueError: If task parameters are invalid
+        Returns:
+            Dict[str, Any]: Results of task execution with status
         """
-        raise NotImplementedError("Mini agents must implement execute method")
-    
-    def validate_task(self, task: Task) -> bool:
-        """
-        Validate that the task contains all required parameters.
+        pass
+
+    def _init_capabilities(self) -> Dict[str, Any]:
+        """Initialize agent capabilities."""
+        return {
+            'name': self.name,
+            'description': self.description,
+            'supported_tasks': self._get_supported_tasks(),
+            'input_requirements': self._get_input_requirements(),
+            'output_format': self._get_output_format()
+        }
+
+    def get_capabilities(self) -> Dict[str, Any]:
+        """Return agent capabilities."""
+        return self.capabilities
+
+    def _get_supported_tasks(self) -> List[str]:
+        """Define tasks supported by the agent."""
+        return []
+
+    def _get_input_requirements(self) -> Dict[str, Any]:
+        """Define required input format."""
+        return {}
+
+    def _get_output_format(self) -> Dict[str, Any]:
+        """Define expected output format."""
+        return {}
+
+    def handle_error(self, task: Task, error: Exception) -> Dict[str, Any]:
+        """Handle task execution errors.
         
         Args:
-            task: Task object to validate
+            task (Task): Failed task
+            error (Exception): Error that occurred
             
         Returns:
-            bool: True if task is valid, False otherwise
+            Dict[str, Any]: Error handling results
         """
-        if not hasattr(task, 'id') or not isinstance(task.id, UUID):
-            return False
-        if not hasattr(task, 'status') or not isinstance(task.status, TaskStatus):
-            return False
-        if not hasattr(task, 'description') or not task.description:
-            return False
+        return {
+            'status': 'error',
+            'error': str(error),
+            'task_id': str(task.id)
+        }
+
+    def validate_input(self, task: Task) -> bool:
+        """Validate task input against requirements."""
+        required_inputs = self._get_input_requirements()
+        for key, value_type in required_inputs.items():
+            if key not in task.input_context:
+                return False
+            if not isinstance(task.input_context[key], eval(value_type)):
+                return False
         return True

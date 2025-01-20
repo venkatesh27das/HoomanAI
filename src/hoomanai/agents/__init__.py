@@ -1,11 +1,11 @@
 from .mini_agents import SummarizerAgent, QnAAgent, SQLGeneratorAgent, RetrieverAgent
-from .compound_agents import RAGAgent, QueryToInsightsAgent
+from .compound_agents import RAG, Query2Insight
 
 __all__ = [
     "SummarizerAgent",
     "QnAAgent",
     "SQLGeneratorAgent",
     "RetrieverAgent",
-    "RAGAgent",
-    "QueryToInsightsAgent"
+    "RAG",
+    "Query2Insight"
 ]

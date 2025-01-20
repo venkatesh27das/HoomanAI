@@ -8,7 +8,7 @@ from hoomanai.agents.mini_agents.sql_generator import SQLGeneratorAgent
 from hoomanai.agents.mini_agents.qna import QnAAgent
 from hoomanai.tools.llm.config import LLMConfig
 from hoomanai.core.types import Task, TaskStatus, AgentType
-from hoomanai.tools.db.connector import DatabaseConnector  # TODO
+from hoomanai.tools.db.connector import DatabaseConnector  
 
 class Query2Insight(CompoundAgent):
     """
