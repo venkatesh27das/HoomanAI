@@ -1,0 +1,46 @@
+# Core dependencies
+pydantic>=2.0.0
+python-dotenv>=0.19.0
+typing-extensions>=4.0.0
+
+# LLM and AI dependencies
+openai>=1.0.0
+langchain>=0.1.0
+chromadb>=0.4.0
+tiktoken>=0.5.0
+anthropic>=0.5.0
+
+# Data processing and utilities
+numpy>=1.24.0
+pandas>=2.0.0
+python-dateutil>=2.8.2
+pytz>=2023.3
+
+# Storage and database
+sqlalchemy>=2.0.0
+redis>=5.0.0
+pymongo>=4.5.0
+
+# API and networking
+requests>=2.31.0
+httpx>=0.24.0
+fastapi>=0.100.0  # If you plan to expose API endpoints
+uvicorn>=0.23.0   # For running FastAPI server
+
+# Testing and development
+pytest>=7.4.0
+pytest-cov>=4.1.0
+black>=23.7.0
+isort>=5.12.0
+flake8>=6.1.0
+mypy>=1.5.0
+
+# Documentation
+mkdocs>=1.5.0
+mkdocs-material>=9.2.0
+pdoc3>=0.10.0
+
+# Optional but recommended
+tqdm>=4.65.0      # For progress bars
+loguru>=0.7.0     # For better logging
+tenacity>=8.2.0   # For retrying operations
