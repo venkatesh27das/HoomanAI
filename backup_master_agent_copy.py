@@ -395,32 +395,20 @@ class MasterAgent:
 
 
     def _create_planning_prompt(self, user_context: UserContext, historical_context: Optional[Dict[str, Any]], analysis: str) -> str:
-        """Create an enhanced prompt for generating the execution plan with only available agents."""
+        """Create an enhanced prompt for generating the execution plan."""
         # Get available agents and their capabilities
         mini_agents = {name: info['capabilities'] for name, info in self.available_mini_agents.items()}
         compound_agents = {name: info['capabilities'] for name, info in self.available_compound_agents.items()}
         
-        # Prepare JSON-encoded strings in advance
+        # Prepare the JSON representations outside of the f-string
         user_context_json = json.dumps(user_context.additional_context) if user_context.additional_context else 'None'
         historical_context_json = json.dumps(historical_context) if historical_context else 'None'
         mini_agents_json = json.dumps(mini_agents, indent=2)
         compound_agents_json = json.dumps(compound_agents, indent=2)
         
-        # Build the instruction string separately
-        available_agents_instruction = """
-        IMPORTANT: Your plan MUST ONLY use the agents listed below. Do not include any other agents 
-        in your plan. Each task must be assigned to one of these specific agents:
-        """
-        for name in mini_agents:
-            available_agents_instruction += f"\n- Mini Agent: {name}"
-        for name in compound_agents:
-            available_agents_instruction += f"\n- Compound Agent: {name}"
-        
-        # Return the final prompt
+        # Return the formatted string with pre-calculated values
         return f"""
-        {available_agents_instruction}
-
-        Based on the following analysis and ONLY the available agents listed above, create a detailed execution plan:
+        Based on the following analysis and available agents, create a detailed execution plan:
         
         Analysis: {analysis}
         
@@ -428,102 +416,62 @@ class MasterAgent:
         User Context: {user_context_json}
         Historical Context: {historical_context_json}
         
-        Available Agents and Their Capabilities:
+        Available Agents and Capabilities:
         Mini Agents: {mini_agents_json}
         Compound Agents: {compound_agents_json}
         
         Create a plan that:
-        1. Uses ONLY the agents listed above
-        2. Breaks down the task into steps that match available agent capabilities
-        3. Assigns the most appropriate available agent for each step
-        4. Defines clear dependencies between steps
-        5. Specifies required input/output for each step
+        1. Breaks down the task into atomic steps
+        2. Assigns the most appropriate agent for each step
+        3. Defines clear dependencies between steps
+        4. Specifies required input/output for each step
+        5. Includes error handling strategies
         
-        Response Format:
+        Provide the plan in the following JSON format:
         {{
             "tasks": [
                 {{
                     "description": "detailed task description",
                     "agent_type": "mini or compound",
-                    "agent_name": "MUST BE ONE OF THE LISTED AGENTS",
+                    "agent_name": "name of the agent",
                     "dependencies": ["list of task IDs this task depends on"],
                     "input_context": {{"required input parameters"}},
-                    "expected_output": {{"expected output format"}}
+                    "expected_output": {{"expected output format"}},
+                    "error_handling": {{"strategies for handling common errors"}}
                 }}
             ],
             "metadata": {{
                 "estimated_completion_time": "estimated time in seconds",
-                "critical_path": ["ordered list of critical tasks"]
+                "critical_path": ["ordered list of critical tasks"],
+                "fallback_strategies": {{"alternative approaches if primary fails"}}
             }}
         }}
         """
 
-    def _extract_required_capabilities(self, task: Task) -> Set[str]:
-        """Extract required capabilities from task description and context."""
-        # This is a simplified implementation - you might want to use LLM to analyze
-        # task requirements more thoroughly
-        capabilities = set()
-        
-        # Add basic capability based on task description
-        capabilities.add(task.description.lower().split()[0])  # e.g., "summarize", "retrieve", "analyze"
-        
-        # Add capabilities based on input/output requirements
-        for key in task.input_context:
-            capabilities.add(f"process_{key}")
-        for key in task.expected_output:
-            capabilities.add(f"produce_{key}")
-            
-        return capabilities
 
     def _validate_plan(self, tasks: List[Task]) -> bool:
-        """Validate the execution plan to ensure only available agents are used."""
-        # First, validate that all agents in the plan are available
-        for task in tasks:
-            if task.agent_type == AgentType.MINI:
-                if task.agent_name not in self.available_mini_agents:
-                    raise ValueError(f"Plan contains unavailable mini agent: {task.agent_name}")
-            elif task.agent_type == AgentType.COMPOUND:
-                if task.agent_name not in self.available_compound_agents:
-                    raise ValueError(f"Plan contains unavailable compound agent: {task.agent_name}")
-            else:
-                raise ValueError(f"Invalid agent type: {task.agent_type}")
-
+        """Validate the execution plan for completeness and correctness."""
         # Check for circular dependencies
         if self._has_circular_dependencies(tasks):
             raise ValueError("Execution plan contains circular dependencies")
-
-        # Validate agent capabilities against task requirements
+            
+        # Verify all required agents are available
         for task in tasks:
-            agent_info = (self.available_mini_agents.get(task.agent_name) 
-                         if task.agent_type == AgentType.MINI 
-                         else self.available_compound_agents.get(task.agent_name))
-            
-            if not agent_info:
-                raise ValueError(f"Agent {task.agent_name} not found")
+            if task.agent_type == AgentType.MINI and task.agent_name not in self.available_mini_agents:
+                raise ValueError(f"Required mini agent {task.agent_name} not available")
+            elif task.agent_type == AgentType.COMPOUND and task.agent_name not in self.available_compound_agents:
+                raise ValueError(f"Required compound agent {task.agent_name} not available")
                 
-            capabilities = agent_info['capabilities']
-            
-            # Check if the task requirements match agent capabilities
-            required_capabilities = self._extract_required_capabilities(task)
-            for capability in required_capabilities:
-                if capability not in capabilities:
-                    raise ValueError(
-                        f"Task '{task.description}' requires capability '{capability}' "
-                        f"which is not provided by agent '{task.agent_name}'"
-                    )
-
         # Validate input/output compatibility between dependent tasks
         for task in tasks:
             for dep_id in task.dependencies:
                 dep_task = next((t for t in tasks if t.id == dep_id), None)
                 if dep_task:
                     if not self._are_io_compatible(dep_task.expected_output, task.input_context):
-                        raise ValueError(
-                            f"Input/output mismatch between tasks {dep_task.id} and {task.id}"
-                        )
-
+                        raise ValueError(f"Input/output mismatch between tasks {dep_task.id} and {task.id}")
+                        
         return True
-    
+
     def _prepare_task_input(self, task: Task, results: Dict[str, Any]) -> Dict[str, Any]:
         """Prepare input for a task based on its dependencies' results."""
         task_input = task.input_context.copy()
@@ -615,6 +563,7 @@ class MasterAgent:
                 return False
         return True
     
+
     def _create_execution_graph(self, tasks: List[Task]) -> Dict[UUID, List[UUID]]:
         """
         Create a directed graph of task dependencies for execution.
