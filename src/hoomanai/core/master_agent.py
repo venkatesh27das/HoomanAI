@@ -9,6 +9,7 @@ from hoomanai.tools.llm.client import LLMClient
 from hoomanai.tools.llm.config import LLMConfig
 from hoomanai.tools.llm.types import LLMResponse
 from hoomanai.tools.llm.exceptions import LLMConnectionError, LLMResponseError
+from hoomanai.core.types import MemoryType 
 
 class AgentType(Enum):
     MINI = "mini"
@@ -67,6 +68,191 @@ class MasterAgent:
             'instance': agent_instance,
             'capabilities': agent_instance.get_capabilities()
         }
+
+    def _parse_plan_into_tasks(self, plan_response: str) -> List[Task]:
+        """
+        Parse the LLM's planning response into a structured list of Task objects.
+        
+        Args:
+            plan_response: JSON string containing the plan from LLM
+            
+        Returns:
+            List[Task]: List of structured Task objects
+            
+        Raises:
+            ValueError: If plan response cannot be parsed or is invalid
+        """
+        try:
+            # Parse the JSON response
+            plan_data = json.loads(plan_response)
+            
+            if 'tasks' not in plan_data:
+                raise ValueError("Plan response missing 'tasks' field")
+                
+            tasks = []
+            for task_data in plan_data['tasks']:
+                # Validate required fields
+                required_fields = ['description', 'agent_type', 'agent_name', 
+                                'dependencies', 'input_context', 'expected_output']
+                missing_fields = [field for field in required_fields 
+                                if field not in task_data]
+                
+                if missing_fields:
+                    raise ValueError(f"Task missing required fields: {missing_fields}")
+                    
+                # Convert string dependencies to UUIDs
+                dependencies = []
+                for dep in task_data['dependencies']:
+                    if isinstance(dep, str):
+                        try:
+                            dependencies.append(UUID(dep))
+                        except ValueError:
+                            # If it's not a UUID string, create a new UUID for this dependency
+                            dependencies.append(uuid4())
+                    else:
+                        dependencies.append(uuid4())
+                
+                # Create Task object
+                task = Task(
+                    id=uuid4(),  # Generate new UUID for the task
+                    description=task_data['description'],
+                    agent_type=AgentType(task_data['agent_type'].lower()),
+                    agent_name=task_data['agent_name'],
+                    dependencies=dependencies,
+                    status=TaskStatus.PENDING,
+                    created_at=datetime.now(),
+                    input_context=task_data['input_context'],
+                    expected_output=task_data['expected_output'],
+                    completed_at=None,
+                    result=None
+                )
+                
+                tasks.append(task)
+                
+            # Validate task dependencies
+            all_task_ids = {task.id for task in tasks}
+            for task in tasks:
+                invalid_deps = [dep for dep in task.dependencies if dep not in all_task_ids]
+                if invalid_deps:
+                    raise ValueError(f"Task {task.id} has invalid dependencies: {invalid_deps}")
+                    
+            return tasks
+            
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Failed to parse plan response as JSON: {str(e)}")
+        except Exception as e:
+            raise ValueError(f"Error parsing plan into tasks: {str(e)}")
+        
+
+    def _get_historical_context(self) -> Dict[str, Any]:
+        """
+        Retrieve relevant historical context from conversation memory to inform execution planning.
+        
+        Returns:
+            Dict[str, Any]: A dictionary containing relevant historical context including:
+                - recent_executions: List of recent execution results
+                - successful_patterns: Common successful execution patterns
+                - failed_patterns: Common failure patterns to avoid
+        """
+        if not self.conversation_memory:
+            return {}
+            
+        try:
+            # Get all execution history entries
+            execution_histories = self.conversation_memory.get_all(memory_type=MemoryType.EXECUTION)
+            
+            if not execution_histories:
+                return {}
+                
+            # Sort histories by timestamp (most recent first)
+            sorted_histories = sorted(
+                execution_histories,
+                key=lambda x: datetime.fromisoformat(json.loads(x.content)['timestamp']),
+                reverse=True
+            )
+            
+            # Get the 5 most recent successful executions
+            recent_executions = []
+            successful_patterns = {}
+            failed_patterns = {}
+            
+            for history in sorted_histories[:5]:
+                history_content = json.loads(history.content)
+                
+                # Extract plan and results
+                plan = history_content['plan']
+                results = history_content['results']
+                
+                # Check if execution was successful (no failed tasks)
+                failed_tasks = [task for task in plan['tasks'] 
+                            if task['status'] == TaskStatus.FAILED.value]
+                
+                execution_pattern = {
+                    'task_sequence': [task['description'] for task in plan['tasks']],
+                    'agent_usage': [task['agent_name'] for task in plan['tasks']],
+                    'metadata': plan['metadata']
+                }
+                
+                if not failed_tasks:
+                    # Add to successful patterns
+                    pattern_key = tuple(execution_pattern['task_sequence'])
+                    if pattern_key in successful_patterns:
+                        successful_patterns[pattern_key]['count'] += 1
+                    else:
+                        successful_patterns[pattern_key] = {
+                            'pattern': execution_pattern,
+                            'count': 1
+                        }
+                        
+                    # Add to recent executions
+                    recent_executions.append({
+                        'timestamp': history_content['timestamp'],
+                        'plan': plan,
+                        'results': results
+                    })
+                else:
+                    # Add to failed patterns
+                    pattern_key = tuple(execution_pattern['task_sequence'])
+                    if pattern_key in failed_patterns:
+                        failed_patterns[pattern_key]['count'] += 1
+                        failed_patterns[pattern_key]['failures'].append({
+                            'failed_tasks': failed_tasks,
+                            'timestamp': history_content['timestamp']
+                        })
+                    else:
+                        failed_patterns[pattern_key] = {
+                            'pattern': execution_pattern,
+                            'count': 1,
+                            'failures': [{
+                                'failed_tasks': failed_tasks,
+                                'timestamp': history_content['timestamp']
+                            }]
+                        }
+            
+            return {
+                'recent_executions': recent_executions,
+                'successful_patterns': [
+                    pattern['pattern'] 
+                    for pattern in sorted(
+                        successful_patterns.values(),
+                        key=lambda x: x['count'],
+                        reverse=True
+                    )
+                ],
+                'failed_patterns': [
+                    pattern['pattern']
+                    for pattern in sorted(
+                        failed_patterns.values(),
+                        key=lambda x: x['count'],
+                        reverse=True
+                    )
+                ]
+            }
+            
+        except Exception as e:
+            # Log error but don't fail the execution
+            print(f"Error retrieving historical context: {str(e)}")
+            return {}
 
     def create_execution_plan(self, user_context: UserContext) -> ExecutionPlan:
         """Create an LLM-driven execution plan based on the user's query and context."""
@@ -376,3 +562,163 @@ class MasterAgent:
             if key in output_spec and output_spec[key] != value_type:
                 return False
         return True
+    
+
+    def _create_execution_graph(self, tasks: List[Task]) -> Dict[UUID, List[UUID]]:
+        """
+        Create a directed graph of task dependencies for execution.
+        
+        Args:
+            tasks: List of Task objects
+            
+        Returns:
+            Dict mapping task IDs to lists of dependent task IDs
+        """
+        execution_graph = {}
+        
+        # Initialize graph with empty dependency lists
+        for task in tasks:
+            execution_graph[task.id] = []
+            
+        # Add dependencies
+        for task in tasks:
+            for dep_id in task.dependencies:
+                if dep_id in execution_graph:
+                    execution_graph[dep_id].append(task.id)
+                    
+        return execution_graph
+
+    def _get_ready_tasks(self, execution_graph: Dict[UUID, List[UUID]]) -> List[Task]:
+        """
+        Get list of tasks that are ready for execution (all dependencies completed).
+        
+        Args:
+            execution_graph: Dictionary mapping task IDs to dependent task IDs
+            
+        Returns:
+            List of Task objects ready for execution
+        """
+        ready_tasks = []
+        
+        if not self.current_plan:
+            return ready_tasks
+            
+        for task in self.current_plan.tasks:
+            # Skip tasks that are already completed, failed, or in progress
+            if task.status != TaskStatus.PENDING:
+                continue
+                
+            # Check if all dependencies are completed
+            deps_completed = True
+            for dep_id in task.dependencies:
+                dep_task = next((t for t in self.current_plan.tasks if t.id == dep_id), None)
+                if not dep_task or dep_task.status != TaskStatus.COMPLETED:
+                    deps_completed = False
+                    break
+                    
+            if deps_completed:
+                ready_tasks.append(task)
+                
+        return ready_tasks
+
+    def _update_execution_graph(self, execution_graph: Dict[UUID, List[UUID]], 
+                            results: Dict[str, Any]) -> Dict[UUID, List[UUID]]:
+        """
+        Update execution graph based on completed tasks and results.
+        
+        Args:
+            execution_graph: Current execution graph
+            results: Dictionary of task results
+            
+        Returns:
+            Updated execution graph
+        """
+        updated_graph = execution_graph.copy()
+        
+        # Remove completed tasks from graph
+        completed_tasks = {UUID(task_id) for task_id in results.keys()}
+        for completed_task in completed_tasks:
+            if completed_task in updated_graph:
+                del updated_graph[completed_task]
+                
+            # Remove completed task from dependency lists
+            for dependencies in updated_graph.values():
+                if completed_task in dependencies:
+                    dependencies.remove(completed_task)
+                    
+        return updated_graph
+
+    def _execute_task(self, task: Task, task_input: Dict[str, Any]) -> Any:
+        """
+        Execute a single task using the appropriate agent.
+        
+        Args:
+            task: Task object to execute
+            task_input: Prepared input for the task
+            
+        Returns:
+            Task execution result
+            
+        Raises:
+            Exception: If task execution fails
+        """
+        try:
+            # Get appropriate agent based on task type
+            if task.agent_type == AgentType.MINI:
+                agent = self.available_mini_agents.get(task.agent_name, {}).get('instance')
+            else:
+                agent = self.available_compound_agents.get(task.agent_name, {}).get('instance')
+                
+            if not agent:
+                raise ValueError(f"Agent {task.agent_name} not found")
+                
+            # Execute task with prepared input
+            result = agent.execute(task_input)
+            
+            return result
+            
+        except Exception as e:
+            raise Exception(f"Task execution failed: {str(e)}")
+
+    def _consolidate_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Consolidate and format all task results into final output.
+        
+        Args:
+            results: Dictionary mapping task IDs to their results
+            
+        Returns:
+            Consolidated results dictionary
+        """
+        if not self.current_plan:
+            return {}
+            
+        consolidated = {
+            'status': 'completed' if all(task.status == TaskStatus.COMPLETED 
+                                    for task in self.current_plan.tasks) else 'partial',
+            'execution_time': (datetime.now() - self.current_plan.tasks[0].created_at).total_seconds(),
+            'results': {},
+            'failed_tasks': [],
+            'metadata': self.current_plan.metadata
+        }
+        
+        # Add individual task results
+        for task in self.current_plan.tasks:
+            task_id = str(task.id)
+            if task.status == TaskStatus.COMPLETED and task_id in results:
+                consolidated['results'][task_id] = {
+                    'description': task.description,
+                    'agent': task.agent_name,
+                    'result': results[task_id],
+                    'execution_time': (task.completed_at - task.created_at).total_seconds()
+                    if task.completed_at else None
+                }
+            elif task.status == TaskStatus.FAILED:
+                consolidated['failed_tasks'].append({
+                    'task_id': task_id,
+                    'description': task.description,
+                    'agent': task.agent_name,
+                    'error': results.get(task_id, 'Unknown error')
+                })
+                
+        return consolidated

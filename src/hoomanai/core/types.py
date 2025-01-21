@@ -9,6 +9,7 @@ class MemoryType(Enum):
     SHORT_TERM = "short_term"
     LONG_TERM = "long_term"
     WORKING = "working"
+    EXECUTION = "execution"
 
 class MemoryPriority(Enum):
     LOW = 0
